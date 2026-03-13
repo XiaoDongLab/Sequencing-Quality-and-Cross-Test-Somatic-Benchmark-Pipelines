@@ -3,7 +3,7 @@
 This repository contains two independent analytical workflows:
 
 1. `Sequencing Metrics Pipeline`: quantifies coverage breadth, coverage uniformity, read-depth structure, chromosome-scale coverage variation, and allele-fraction distributions from alignment data.
-2. `Cross-Test Somatic Benchmark Pipeline`: benchmarks a primary somatic call set against a comparison call set from an independent test or replicate, with matched germline information and a pseudo-false-positive reference.
+2. `Cross-Test Somatic Benchmark Pipeline`: evaluates a somatic call set defined relative to a bulk sample from the same tissue against a second unique-mutation call set defined relative to another tissue or cell-line comparator, using matched germline inputs and a pseudo-false-positive reference.
 
 # Environment Requirements
 
@@ -138,7 +138,7 @@ Plots are written to `sequencing_metrics_results/plots/`, including:
 
 ## Biological and Analytical Scope
 
-This workflow is designed for settings in which a somatic mutation call set is defined as the set of mutations that are unique relative to a bulk comparator from the same tissue. The benchmark then asks how that primary unique-mutation set behaves when compared with a second unique-mutation set generated against a different bulk tissue or cell-line comparator. Germline call sets from the sample and from the comparison tissue or cell line are used to establish the expected variant background, and a broad germline-mark reference is used to define a pseudo-false-positive background. The aim is to obtain interpretable pseudo-true-positive rates, pseudo-false-positive rates, mixture summaries, and burden estimates under this cross-comparison design.
+This workflow is designed for settings in which the primary somatic mutation call set is defined as mutations that are unique relative to a bulk sample from the same tissue. The benchmark then evaluates that primary unique-mutation set against a second unique-mutation set generated using a different bulk tissue or cell-line comparator. Germline call sets from the sample and from the comparison tissue or cell line are used to establish the expected variant background, and a broad germline-mark reference is used to define a pseudo-false-positive background. The aim is to obtain interpretable pseudo-true-positive rates, pseudo-false-positive rates, mixture summaries, and burden estimates under this cross-comparison design.
 
 ## Required Inputs
 
@@ -189,10 +189,10 @@ bash run_sm.sh \
 
 Tables:
 
-- `<sample>.x.tsv`: primary benchmark summary table
+- `<sample>.x.tsv`: primary benchmark summary table for the unique-mutation comparison
 - `<sample>.m.tsv`: germline-derived mixture summary table
-- `<sample>.snv_xy.tsv`: SNV pseudo-false-positive versus pseudo-true-positive coordinates
-- `<sample>.ind_xy.tsv`: indel pseudo-false-positive versus pseudo-true-positive coordinates
+- `<sample>.snv_xy.tsv`: SNV pseudo-false-positive versus pseudo-true-positive coordinates under the cross-comparison design
+- `<sample>.ind_xy.tsv`: indel pseudo-false-positive versus pseudo-true-positive coordinates under the cross-comparison design
 - `<sample>.mix.tsv`: mixture summary metrics
 - `<sample>.burden.tsv`: corrected somatic burden estimates
 
