@@ -4,14 +4,17 @@ set -euo pipefail
 if [[ $# -lt 1 ]]; then
   cat >&2 <<USAGE
 Usage:
-  bash run_sequencing_metrics_pipeline.sh <sample_id_file> [threads] [base_dir] [out_dir] [ref_fasta]
+  bash run_sequencing_metrics_pipeline.sh <sample_id_file> [threads] [base_dir] [out_dir] [ref_fasta] [vaf_site_file]
 
 Arguments:
   sample_id_file   Text file with one sample ID per line
-  threads          Number of threads (default: 8)
+  threads          Number of threads (default: 8; users should set this explicitly)
   base_dir         Base directory containing sample subdirectories (default: ../lab_data)
   out_dir          Output directory for merged tables and plots (default: ./sequencing_metrics_results)
-  ref_fasta        Reference FASTA (default: \$HOME/ref/hg38/references-hg38-v0-Homo_sapiens_assembly38.fasta)
+  ref_fasta        Reference FASTA (default convenience path only; users should provide their own reference)
+  vaf_site_file    VAF site file relative to each sample directory, or an absolute path.
+                   Supported formats: VCF/VCF.GZ or BED/BED.GZ with columns:
+                   chrom, start, end, ref, alt. Default: hSNP.bed
 USAGE
   exit 1
 fi
@@ -21,6 +24,7 @@ threads="${2:-8}"
 base_dir="${3:-../lab_data}"
 out_dir="${4:-./sequencing_metrics_results}"
 ref_fasta="${5:-$HOME/ref/hg38/references-hg38-v0-Homo_sapiens_assembly38.fasta}"
+vaf_site_spec="${6:-hSNP.bed}"
 fai="${ref_fasta}.fai"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 r_script="${script_dir}/plot_sequencing_metrics.R"
@@ -39,22 +43,84 @@ done
 
 mkdir -p "$bridge_dir" "$plot_dir"
 
+if [[ $# -lt 5 ]]; then
+  echo "Warning: the default reference FASTA path is a convenience placeholder and is not recommended for routine use." >&2
+  echo "Warning: provide the study-specific reference FASTA explicitly." >&2
+fi
+
+if [[ $# -lt 6 ]]; then
+  echo "Warning: the default VAF site file is hSNP.bed in each sample directory." >&2
+  echo "Warning: confirm that this default matches the study design before running the pipeline." >&2
+fi
+
+resolve_sample_path() {
+  local samp="$1"
+  local sdir="$2"
+  local spec="$3"
+  local resolved="${spec//\{sample_id\}/$samp}"
+  if [[ "$resolved" = /* ]]; then
+    printf '%s\n' "$resolved"
+  else
+    printf '%s/%s\n' "$sdir" "$resolved"
+  fi
+}
+
+build_vaf_targets_vcf() {
+  local src="$1"
+  local out_vcf="$2"
+  local src_lc="${src,,}"
+
+  if [[ "$src_lc" == *.vcf || "$src_lc" == *.vcf.gz ]]; then
+    bcftools view -Ov "$src" | bcftools norm -m -any -Ov -o "$out_vcf"
+    return 0
+  fi
+
+  if [[ "$src_lc" == *.bed || "$src_lc" == *.bed.gz ]]; then
+    {
+      printf '##fileformat=VCFv4.2\n'
+      printf '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n'
+      if [[ "$src_lc" == *.gz ]]; then
+        gzip -cd "$src"
+      else
+        cat "$src"
+      fi | awk '
+        BEGIN{FS=OFS="\t"}
+        /^#/ {next}
+        NF < 5 {next}
+        $2 !~ /^[0-9]+$/ {next}
+        $3 !~ /^[0-9]+$/ {next}
+        $4 == "" || $4 == "." {next}
+        $5 == "" || $5 == "." {next}
+        {print $1, $2 + 1, ".", toupper($4), toupper($5), ".", "PASS", "."}
+      '
+    } > "$out_vcf"
+
+    if [[ "$(awk 'END{print NR}' "$out_vcf")" -le 2 ]]; then
+      echo "No usable VAF target records were found in: $src" >&2
+      return 1
+    fi
+    return 0
+  fi
+
+  echo "Unsupported VAF site file format: $src" >&2
+  echo "Supported formats are .vcf, .vcf.gz, .bed, and .bed.gz." >&2
+  return 1
+}
+
 run_one_sample() {
   local samp="$1"
   local sdir="${base_dir}/${samp}"
   local bam="${sdir}/${samp}_WGNS_filtered.bam"
   local cov_txt="${sdir}/cov_${samp}.txt"
-  local ssnv="${sdir}/ssnv.results.muts.vcf.gz"
-  local pass_ssnv="${sdir}/pass.ssnv.vcf.gz"
-  local sindel="${sdir}/sindel.results.indel.vcf.gz"
-  local pass_sindel="${sdir}/pass.sindel.vcf.gz"
-  local ssnv_ad_vcf="${sdir}/${samp}_ssnv_AD.vcf"
-  local sindel_ad_vcf="${sdir}/${samp}_sindel_AD.vcf"
+  local vaf_site_file
+  local vaf_targets_vcf="${sdir}/${samp}_vaf_targets.vcf"
+  local vaf_ad_vcf="${sdir}/${samp}_vaf_AD.vcf"
+  local vaf_values_tsv="${sdir}/${samp}_vaf_values.tsv"
 
   [[ -d "$sdir" ]] || { echo "Sample directory not found: $sdir" >&2; return 1; }
   [[ -f "$bam" ]] || { echo "BAM not found: $bam" >&2; return 1; }
-  [[ -f "$ssnv" ]] || { echo "sSNV VCF not found: $ssnv" >&2; return 1; }
-  [[ -f "$sindel" ]] || { echo "sindel VCF not found: $sindel" >&2; return 1; }
+  vaf_site_file="$(resolve_sample_path "$samp" "$sdir" "$vaf_site_spec")"
+  [[ -f "$vaf_site_file" ]] || { echo "VAF site file not found: $vaf_site_file" >&2; return 1; }
 
   date
   echo "== ${samp}: START Depth =="
@@ -105,20 +171,25 @@ run_one_sample() {
   date
 
   echo "== ${samp}: START VAF =="
-  bcftools view -f PASS -Oz -o "$pass_ssnv" "$ssnv"
-  bcftools index -f -t "$pass_ssnv"
-  bcftools view -f PASS -Oz -o "$pass_sindel" "$sindel"
-  bcftools index -f -t "$pass_sindel"
-
-  bcftools mpileup -f "$ref_fasta" -R "$pass_ssnv" -a FORMAT/AD -Ov "$bam" > "$ssnv_ad_vcf"
-  bcftools query -f '[%AD]\n' "$ssnv_ad_vcf" \
-    | awk -F ',' '{if (($1 + $2) != 0) print $2/($1+$2); else print "NA"}' \
-    > "${sdir}/sSNV_ALT_precentage.txt"
-
-  bcftools mpileup -f "$ref_fasta" -R "$pass_sindel" -a FORMAT/AD -Ov "$bam" > "$sindel_ad_vcf"
-  bcftools query -f '[%AD]\n' "$sindel_ad_vcf" \
-    | awk -F ',' '{if (($1 + $2) != 0) print $2/($1+$2); else print "NA"}' \
-    > "${sdir}/sindel_ALT_precentage.txt"
+  build_vaf_targets_vcf "$vaf_site_file" "$vaf_targets_vcf"
+  bcftools mpileup -f "$ref_fasta" -R "$vaf_targets_vcf" -a FORMAT/AD -Ov "$bam" \
+    | bcftools norm -m -any -Ov -o "$vaf_ad_vcf"
+  bcftools query -f '%REF\t%ALT[\t%AD]\n' "$vaf_ad_vcf" \
+    | awk '
+      BEGIN{FS=OFS="\t"}
+      function classify_variant(ref, alt) {
+        if (length(ref) == 1 && length(alt) == 1) return "SNV"
+        return "indel"
+      }
+      NF >= 3 {
+        n = split($3, ad, ",")
+        if (n < 2) next
+        if (ad[1] == "." || ad[2] == ".") next
+        denom = ad[1] + ad[2]
+        if (denom <= 0) next
+        print classify_variant($1, $2), ad[2] / denom
+      }
+    ' > "$vaf_values_tsv"
 
   echo "== ${samp}: END VAF =="
   date
@@ -135,7 +206,7 @@ collect_tables() {
   printf "sample_id\tx_frac\ty_frac\n" > "$lorenz_tsv"
   printf "sample_id\tdepth\tcount\n" > "$depth_dist_tsv"
   printf "sample_id\tchrom\tstart\tend\tcoverage\tmean_depth\tbin_mb\n" > "$chrom_cov_tsv"
-  printf "sample_id\tvariant_type\tvaf\n" > "$vaf_tsv"
+  printf "sample_id\tvariant_class\tvaf\n" > "$vaf_tsv"
 
   while IFS= read -r samp || [[ -n "$samp" ]]; do
     [[ -n "$samp" ]] || continue
@@ -144,8 +215,7 @@ collect_tables() {
     local lorenz_txt="${sdir}/${samp}_lorenz.txt"
     local dist_txt="${sdir}/${samp}_distribution.txt"
     local chrom_txt="${sdir}/chrom_cov_table.txt"
-    local ssnv_vaf="${sdir}/sSNV_ALT_precentage.txt"
-    local sindel_vaf="${sdir}/sindel_ALT_precentage.txt"
+    local vaf_values="${sdir}/${samp}_vaf_values.tsv"
 
     [[ -s "$cov_txt" ]] && awk -v OFS='\t' -v gs="$genome_size" 'NF>=3{print $1,$2,$3,gs,$3/gs}' "$cov_txt" >> "$depth_curve_tsv"
 
@@ -170,8 +240,9 @@ collect_tables() {
       }
     ' "$chrom_txt" >> "$chrom_cov_tsv"
 
-    [[ -s "$ssnv_vaf" ]] && awk -v OFS='\t' -v samp="$samp" '($1!="NA" && $1!="nan" && $1!="NaN"){print samp,"sSNV",$1}' "$ssnv_vaf" >> "$vaf_tsv"
-    [[ -s "$sindel_vaf" ]] && awk -v OFS='\t' -v samp="$samp" '($1!="NA" && $1!="nan" && $1!="NaN"){print samp,"sindel",$1}' "$sindel_vaf" >> "$vaf_tsv"
+    [[ -s "$vaf_values" ]] && awk -v OFS='\t' -v samp="$samp" '
+      NF >= 2 && $2 != "NA" && $2 != "nan" && $2 != "NaN" {print samp,$1,$2}
+    ' "$vaf_values" >> "$vaf_tsv"
   done < "$sample_file"
 }
 

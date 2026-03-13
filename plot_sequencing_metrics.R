@@ -204,7 +204,7 @@ ggsave(file.path(out_dir, "chrom_window_coverage_all_samples.png"), p4, width = 
 vaf <- read_tsv(vaf_path, show_col_types = FALSE) %>%
   mutate(vaf = as.numeric(vaf)) %>%
   filter(is.finite(vaf), vaf >= 0, vaf <= 1) %>%
-  mutate(variant_type = factor(variant_type, levels = c("sSNV", "sindel")))
+  mutate(variant_class = factor(variant_class, levels = unique(variant_class)))
 
 write_tsv(vaf, file.path(out_dir, "vaf_all_mutations_including_zero.tsv"))
 vaf_exc0 <- vaf %>% filter(vaf > 0)
@@ -212,14 +212,20 @@ write_tsv(vaf_exc0, file.path(out_dir, "vaf_all_mutations_excluding_zero.tsv"))
 
 plot_vaf_raw <- function(df, main_title, out_prefix) {
   p_txt <- NA_character_
-  tmp1 <- df %>% filter(variant_type == "sSNV") %>% pull(vaf)
-  tmp2 <- df %>% filter(variant_type == "sindel") %>% pull(vaf)
+  classes <- levels(droplevels(df$variant_class))
+  if (length(classes) == 2) {
+    tmp1 <- df %>% filter(variant_class == classes[1]) %>% pull(vaf)
+    tmp2 <- df %>% filter(variant_class == classes[2]) %>% pull(vaf)
+  } else {
+    tmp1 <- numeric()
+    tmp2 <- numeric()
+  }
   if (length(tmp1) >= 2 && length(tmp2) >= 2) {
     pval <- suppressWarnings(wilcox.test(tmp1, tmp2, paired = FALSE)$p.value)
-    p_txt <- paste0("Wilcoxon p = ", format(pval, digits = 3, scientific = TRUE))
+    p_txt <- paste0(classes[1], " versus ", classes[2], " Wilcoxon p = ", format(pval, digits = 3, scientific = TRUE))
   }
 
-  p <- ggplot(df, aes(x = variant_type, y = vaf, fill = variant_type)) +
+  p <- ggplot(df, aes(x = variant_class, y = vaf, fill = variant_class)) +
     geom_violin(trim = FALSE, width = 0.9, alpha = 0.35, color = "black", linewidth = 0.3) +
     ggbeeswarm::geom_quasirandom(
       width = 0.32,
@@ -230,7 +236,7 @@ plot_vaf_raw <- function(df, main_title, out_prefix) {
       stroke = 0
     ) +
     stat_summary(fun = median, geom = "point", shape = 95, size = 7, color = "black") +
-    labs(title = main_title, subtitle = p_txt, x = NULL, y = "VAF") +
+    labs(title = main_title, subtitle = p_txt, x = NULL, y = "Observed allele fraction") +
     coord_cartesian(ylim = c(0, 1)) +
     theme_base +
     theme(legend.position = "none")
@@ -239,5 +245,5 @@ plot_vaf_raw <- function(df, main_title, out_prefix) {
   ggsave(file.path(out_dir, paste0(out_prefix, ".png")), p, width = 6.5, height = 4.8, dpi = 300)
 }
 
-plot_vaf_raw(vaf, "Raw VAF distribution including zero", "vaf_raw_including_zero")
-plot_vaf_raw(vaf_exc0, "Raw VAF distribution excluding zero", "vaf_raw_excluding_zero")
+plot_vaf_raw(vaf, "Observed allele-fraction distribution at supplied sites, including zero", "vaf_raw_including_zero")
+plot_vaf_raw(vaf_exc0, "Observed allele-fraction distribution at supplied sites, excluding zero", "vaf_raw_excluding_zero")

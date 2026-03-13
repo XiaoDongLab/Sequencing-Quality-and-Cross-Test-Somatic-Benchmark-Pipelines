@@ -19,7 +19,7 @@ Required:
 Optional:
   --filter      FILTER string, e.g. PASS
   --ref         Reference FASTA for left-alignment
-  --reflen      Reference genome length [default: 3137300923]
+  --reflen      Reference genome length [default: 3137300923; convenience value only, not recommended for routine use]
   -h, --help    Show this message
 
 Example:
@@ -34,6 +34,11 @@ Example:
     --out outdir \
     --filter PASS \
     --ref reference.fa
+
+Note:
+  The example values for --callable and --reflen are placeholders.
+  Users should replace them with study-specific callable-base counts and
+  reference lengths.
 
 EOF2
 }
